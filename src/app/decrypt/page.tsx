@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 
-export default function DecryptPage() {
+function DecryptContent() {
   const searchParams = useSearchParams();
   const [ciphertext, setCiphertext] = useState('');
   const [iv, setIv] = useState('');
@@ -74,7 +74,7 @@ export default function DecryptPage() {
     };
   }, [decryptedText]);
 
-  const fromBase64 = (b64: string): Uint8Array => {
+  const fromBase64 = (b64: string) => {
     const binaryString = atob(b64);
     const bytes = new Uint8Array(binaryString.length);
     for (let i = 0; i < binaryString.length; i++) {
@@ -115,7 +115,7 @@ export default function DecryptPage() {
       const key = await crypto.subtle.deriveKey(
         {
           name: 'PBKDF2',
-          salt: saltBuf,
+          salt: saltBuf as BufferSource,
           iterations: parseInt(iterations) || 100000,
           hash: 'SHA-256',
         },
@@ -357,5 +357,13 @@ export default function DecryptPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function DecryptPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-gradient-to-br from-purple-50 via-pink-50 to-blue-50" />}>
+      <DecryptContent />
+    </Suspense>
   );
 }
