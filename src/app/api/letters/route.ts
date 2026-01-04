@@ -4,20 +4,19 @@ import { createLetter } from '@/lib/db';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { content, email, scheduledTime } = body;
+    const { encrypted, email, scheduledTime } = body;
 
-    // 验证必填字段
-    if (!content || !email || !scheduledTime) {
+    if (!encrypted || !email || !scheduledTime) {
       return NextResponse.json(
         { error: '请填写所有必填字段' },
         { status: 400 }
       );
     }
 
-    // 验证内容长度
-    if (content.length > 3000) {
+    const { ciphertext, iv, salt, algorithm, kdf, iterations } = encrypted ?? {};
+    if (!ciphertext || !iv || !salt || !algorithm || !kdf || !iterations) {
       return NextResponse.json(
-        { error: '信件内容不能超过3000字' },
+        { error: '加密数据缺失，请重试' },
         { status: 400 }
       );
     }
@@ -41,12 +40,20 @@ export async function POST(request: Request) {
       );
     }
 
-    // 创建信件（存储为ISO格式，包含时区信息）
+    const storedContent = JSON.stringify({ version: 1, encrypted });
+    if (storedContent.length > 12000) {
+      return NextResponse.json(
+        { error: '加密后内容过长，请缩短信件内容' },
+        { status: 400 }
+      );
+    }
+
     const letterId = await createLetter({
-      content,
+      content: storedContent,
       recipient_email: email,
       scheduled_time: scheduled.toISOString(),
       status: 'pending',
+      is_encrypted: true,
     });
 
     return NextResponse.json({

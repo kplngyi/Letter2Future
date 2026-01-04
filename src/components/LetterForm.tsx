@@ -10,12 +10,69 @@ export default function LetterForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [passphrase, setPassphrase] = useState('');
+  const [timeDisplayMode, setTimeDisplayMode] = useState<'ymd' | 'days'>('ymd');
 
   const STORAGE_KEY = 'letter2future:draft';
-  const TEMPLATE_TEXT = '亲爱的未来的我：\n\n希望收到这封信的你，一切安好。\n\n此刻的我想对你说——';
+  const TEMPLATE_TEXT = '未来的我：\n\n希望收到这封信的你，一切安好。\n\n此刻的我想对你说——';
 
   const charCount = content.length;
   const maxChars = 3000;
+
+  const toBase64 = (data: Uint8Array) => {
+    let str = '';
+    data.forEach((b) => {
+      str += String.fromCharCode(b);
+    });
+    return btoa(str);
+  };
+
+  const encryptContent = async (plain: string, secret: string) => {
+    if (!secret) throw new Error('请填写加密密钥');
+    if (typeof window === 'undefined' || !window.crypto?.subtle) {
+      throw new Error('当前环境不支持加密');
+    }
+
+    const encoder = new TextEncoder();
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      'PBKDF2',
+      false,
+      ['deriveKey']
+    );
+
+    const key = await crypto.subtle.deriveKey(
+      {
+        name: 'PBKDF2',
+        salt,
+        iterations: 100_000,
+        hash: 'SHA-256',
+      },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt']
+    );
+
+    const cipherBuffer = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      key,
+      encoder.encode(plain)
+    );
+
+    return {
+      ciphertext: toBase64(new Uint8Array(cipherBuffer)),
+      iv: toBase64(iv),
+      salt: toBase64(salt),
+      algorithm: 'AES-GCM',
+      kdf: 'PBKDF2',
+      iterations: 100_000,
+    } as const;
+  };
 
   // 获取当前时间（用于设置最小可选时间）
   const getMinDateTime = () => {
@@ -29,7 +86,7 @@ export default function LetterForm() {
     return local.toISOString().slice(0, 16);
   };
 
-  const getTimeUntil = (value: string, nowMs = Date.now()) => {
+  const getTimeUntil = (value: string, mode: 'ymd' | 'days', nowMs = Date.now()) => {
     if (!value) return null;
     const target = new Date(value);
     if (Number.isNaN(target.getTime())) return null;
@@ -43,7 +100,9 @@ export default function LetterForm() {
       const years = Math.floor(totalDays / 365);
       const months = Math.floor((totalDays % 365) / 30);
       const days = totalDays - years * 365 - months * 30;
-      // const pad2 = (n: number) => n.toString().padStart(2, '0');
+      if (mode === 'days') {
+        return `${Math.ceil(diffDays)}天后`;
+      }
       return `${years} 年 ${months} 个月 ${days} 天后`;
     }
 
@@ -136,17 +195,23 @@ export default function LetterForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!passphrase) {
+      setMessage({ type: 'error', text: '请填写加密密钥' });
+      return;
+    }
     setIsSubmitting(true);
     setMessage(null);
 
     try {
+      const encrypted = await encryptContent(content, passphrase);
+
       const response = await fetch('/api/letters', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          content,
+          encrypted,
           email,
           scheduledTime: new Date(scheduledTime).toISOString(),
         }),
@@ -164,6 +229,7 @@ export default function LetterForm() {
         setContent('');
         setEmail('');
         setScheduledTime('');
+        setPassphrase('');
         if (typeof window !== 'undefined') {
           localStorage.removeItem(STORAGE_KEY);
         }
@@ -190,7 +256,7 @@ export default function LetterForm() {
         <div>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-2 gap-3">
             <label htmlFor="content" className="block text-lg font-semibold text-gray-700">
-              信件内容 <span className="ml-2 text-sm font-normal text-gray-500">(支持 Markdown)</span>
+              信件内容 <span className="ml-2 text-sm font-normal text-gray-500"></span>
             </label>
             <div className="flex flex-wrap gap-2 sm:justify-end">
               <button
@@ -251,6 +317,23 @@ export default function LetterForm() {
             className="w-full px-3 sm:px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-gray-800"
             placeholder="your@email.com"
           />
+        </div>
+
+        {/* 加密密钥 */}
+        <div>
+          <label htmlFor="passphrase" className="block text-lg font-semibold text-gray-700 mb-2">
+            加密密钥（仅自己保存）
+          </label>
+          <input
+            id="passphrase"
+            type="password"
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            required
+            className="w-full px-3 sm:px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-gray-800"
+            placeholder="请输入并妥善保存，平台不存密钥"
+          />
+          <p className="mt-2 text-sm text-gray-500">密钥不会上传或保存，请务必记住，否则无法解密信件。</p>
         </div>
 
         {/* 发送时间 */}
@@ -319,10 +402,15 @@ export default function LetterForm() {
           </div>
           <p className="mt-2 text-sm text-gray-500">
             您将在{' '}
-            <span className="font-medium text-gray-800">
-              {scheduledTime ? getTimeUntil(scheduledTime, now) || '未来某天' : '未来某天'}
+            <span
+              className="font-medium text-gray-800 cursor-pointer select-none"
+              onClick={() => setTimeDisplayMode((prev) => (prev === 'ymd' ? 'days' : 'ymd'))}
+              title="点击切换显示规则"
+            >
+              {scheduledTime ? getTimeUntil(scheduledTime, timeDisplayMode, now) || '未来某天' : '未来某天'}
             </span>{' '}
             收到这封信
+            <span className="ml-2 text-xs text-gray-400 select-none">(点击可切换)</span>
           </p>
         </div>
 
