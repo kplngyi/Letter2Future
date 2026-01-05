@@ -89,12 +89,16 @@ function DecryptContent() {
     setIsDecrypting(true);
 
     try {
-      if (!ciphertext || !iv || !salt || !passphrase) {
-        throw new Error('请填写所有必填字段');
+      if (!passphrase) {
+        throw new Error('请填写密钥');
+      }
+
+      if (!ciphertext || !iv || !salt) {
+        throw new Error('缺少加密参数（密文、IV 或 Salt）');
       }
 
       if (typeof window === 'undefined' || !window.crypto?.subtle) {
-        throw new Error('当前环境不支持解密');
+        throw new Error('当前环境不支持解密（需要 HTTPS）');
       }
 
       const encoder = new TextEncoder();
@@ -112,11 +116,12 @@ function DecryptContent() {
         ['deriveKey']
       );
 
+      const iterValue = parseInt(iterations) || 100000;
       const key = await crypto.subtle.deriveKey(
         {
           name: 'PBKDF2',
           salt: saltBuf as BufferSource,
-          iterations: parseInt(iterations) || 100000,
+          iterations: iterValue,
           hash: 'SHA-256',
         },
         keyMaterial,
@@ -138,11 +143,14 @@ function DecryptContent() {
       const maybeKeyIssue =
         err instanceof DOMException ||
         message.includes('OperationError') ||
-        message.toLowerCase().includes('decrypt');
+        message.toLowerCase().includes('decrypt') ||
+        message.toLowerCase().includes('key');
       if (maybeKeyIssue) {
-        setError('解密失败，可能是密钥不匹配或 IV / Salt / 迭代次数不一致');
+        setError('❌ 解密失败 - 可能原因：\n• 密钥不正确\n• IV / Salt / 迭代次数与加密时不一致\n• 密文数据损坏');
+      } else if (message.includes('缺少') || message.includes('密文')) {
+        setError(message);
       } else {
-        setError(message || '解密失败，请检查密钥是否正确');
+        setError(message || '解密失败，请检查所有参数是否正确');
       }
     } finally {
       setIsDecrypting(false);

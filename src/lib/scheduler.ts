@@ -1,6 +1,14 @@
 import cron from 'node-cron';
+import MarkdownIt from 'markdown-it';
 import { getPendingLetters, updateLetterStatus } from './db';
 import { sendEmail } from './email';
+
+const md = new MarkdownIt({
+  html: true,
+  linkify: true,
+  typographer: true,
+  breaks: true,
+});
 
 let schedulerStarted = false;
 
@@ -34,7 +42,9 @@ export function startScheduler() {
               const parsed = JSON.parse(letter.content);
               if (parsed?.encrypted?.ciphertext) {
               const { ciphertext, iv, salt, iterations } = parsed.encrypted;
-              const decryptUrl = `${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/decrypt?c=${encodeURIComponent(ciphertext)}&i=${encodeURIComponent(iv)}&s=${encodeURIComponent(salt)}&iter=${iterations || 100000}`;
+              // 使用 HTTPS 生成解密链接
+              const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://localhost:3000';
+              const decryptUrl = `${baseUrl}/decrypt?c=${encodeURIComponent(ciphertext)}&i=${encodeURIComponent(iv)}&s=${encodeURIComponent(salt)}&iter=${iterations || 100000}`;
               
               textBody = `📬 来自过去的一封信
 
@@ -43,7 +53,7 @@ export function startScheduler() {
 点击下方链接，输入您保存的密钥即可查看信件内容：
 ${decryptUrl}
 
-或手动访问解密页面：${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/decrypt
+或手动访问解密页面：${baseUrl}/decrypt
 并填入以下信息：
 
 密文: ${ciphertext}
@@ -89,7 +99,7 @@ Salt: ${salt}
                 </div>
 
                 <details style="font-size: 13px; color: #6b7280; margin-top: 24px;">
-                  <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">技术信息（可选）</summary>
+                  <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">技术信息</summary>
                   <div style="background: #f3f4f6; padding: 12px; border-radius: 6px; font-family: 'Courier New', monospace; margin-top: 8px;">
                     <div><strong>算法:</strong> AES-GCM</div>
                     <div><strong>密钥派生:</strong> PBKDF2 (${iterations || 100000} iterations)</div>
@@ -107,8 +117,50 @@ Salt: ${salt}
               textBody = '加密信件解析失败，请联系支持团队。';
             }
           } else {
-            // 明文信件，直接使用 content
-            textBody = letter.content;
+            // 明文信件，需要解析 JSON 格式
+            try {
+              const parsed = JSON.parse(letter.content);
+              if (parsed?.plaintext) {
+                textBody = parsed.plaintext;
+              } else {
+                // 兼容旧数据格式（直接存储文本）
+                textBody = letter.content;
+              }
+            } catch (err) {
+              // 如果解析失败，直接使用 content
+              textBody = letter.content;
+            }
+
+            // 转换 Markdown 为 HTML
+            const htmlContent = md.render(textBody);
+
+            // 生成美观的 HTML 格式，包含 Markdown 样式
+            htmlBody = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333;">
+              <div style="text-align: center; margin-bottom: 30px;">
+                <h1 style="font-size: 28px; color: #8b5cf6; margin: 0;">📬 来自过去的一封信</h1>
+              </div>
+              
+              <div style="background: linear-gradient(135deg, #f5f3ff 0%, #fce7f3 100%); border-radius: 12px; padding: 24px; margin-bottom: 24px;">
+                <style>
+                  .letter-content h1, .letter-content h2, .letter-content h3 { color: #8b5cf6; margin-top: 16px; }
+                  .letter-content p { margin: 12px 0; }
+                  .letter-content a { color: #8b5cf6; text-decoration: none; }
+                  .letter-content a:hover { text-decoration: underline; }
+                  .letter-content em { font-style: italic; }
+                  .letter-content strong { font-weight: 600; }
+                  .letter-content code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-family: 'Courier New', monospace; }
+                  .letter-content blockquote { border-left: 4px solid #8b5cf6; margin: 12px 0; padding-left: 12px; }
+                  .letter-content ul, .letter-content ol { margin: 12px 0; }
+                  .letter-content li { margin: 8px 0; }
+                </style>
+                <div class="letter-content">
+                  ${htmlContent}
+                </div>
+              </div>
+
+              <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 24px 0;">
+              <p style="text-align: center; font-size: 12px; color: #9ca3af; margin: 0;">这封信由 Letter2Future 平台准时送达</p>
+            </div>`;
           }
 
           await sendEmail({
