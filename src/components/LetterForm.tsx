@@ -3,6 +3,16 @@
 import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 
+// 在 Node.js 环境中启用 crypto polyfill（仅用于测试）
+if (typeof window === 'undefined' && typeof globalThis.crypto === 'undefined') {
+  try {
+    const { webcrypto } = require('crypto');
+    globalThis.crypto = webcrypto as any;
+  } catch (e) {
+    // 忽略错误，在浏览器环境中不需要
+  }
+}
+
 export default function LetterForm() {
   const [content, setContent] = useState('');
   const [email, setEmail] = useState('');
@@ -12,6 +22,8 @@ export default function LetterForm() {
   const [now, setNow] = useState(() => Date.now());
   const [passphrase, setPassphrase] = useState('');
   const [timeDisplayMode, setTimeDisplayMode] = useState<'ymd' | 'days'>('ymd');
+  const [useEncryption, setUseEncryption] = useState(true);
+  const [showPassphrase, setShowPassphrase] = useState(false);
 
   const STORAGE_KEY = 'letter2future:draft';
   const TEMPLATE_TEXT = '未来的我：\n\n希望收到这封信的你，一切安好。\n\n此刻的我想对你说——';
@@ -29,15 +41,18 @@ export default function LetterForm() {
 
   const encryptContent = async (plain: string, secret: string) => {
     if (!secret) throw new Error('请填写加密密钥');
-    if (typeof window === 'undefined' || !window.crypto?.subtle) {
-      throw new Error('当前环境不支持加密');
+    
+    // 检查 crypto API 是否可用（浏览器或 Node.js polyfill）
+    const cryptoApi = typeof window !== 'undefined' ? window.crypto : globalThis.crypto;
+    if (!cryptoApi?.subtle) {
+      throw new Error('当前环境不支持加密（需要 HTTPS 或现代浏览器）');
     }
 
     const encoder = new TextEncoder();
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const salt = cryptoApi.getRandomValues(new Uint8Array(16));
+    const iv = cryptoApi.getRandomValues(new Uint8Array(12));
 
-    const keyMaterial = await crypto.subtle.importKey(
+    const keyMaterial = await cryptoApi.subtle.importKey(
       'raw',
       encoder.encode(secret),
       'PBKDF2',
@@ -45,7 +60,7 @@ export default function LetterForm() {
       ['deriveKey']
     );
 
-    const key = await crypto.subtle.deriveKey(
+    const key = await cryptoApi.subtle.deriveKey(
       {
         name: 'PBKDF2',
         salt,
@@ -58,7 +73,7 @@ export default function LetterForm() {
       ['encrypt']
     );
 
-    const cipherBuffer = await crypto.subtle.encrypt(
+    const cipherBuffer = await cryptoApi.subtle.encrypt(
       { name: 'AES-GCM', iv },
       key,
       encoder.encode(plain)
@@ -195,7 +210,7 @@ export default function LetterForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!passphrase) {
+    if (useEncryption && !passphrase) {
       setMessage({ type: 'error', text: '请填写加密密钥' });
       return;
     }
@@ -203,7 +218,10 @@ export default function LetterForm() {
     setMessage(null);
 
     try {
-      const encrypted = await encryptContent(content, passphrase);
+      let encrypted = null;
+      if (useEncryption) {
+        encrypted = await encryptContent(content, passphrase);
+      }
 
       const response = await fetch('/api/letters', {
         method: 'POST',
@@ -211,7 +229,8 @@ export default function LetterForm() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          encrypted,
+          encrypted: useEncryption ? encrypted : null,
+          content: useEncryption ? null : content,
           email,
           scheduledTime: new Date(scheduledTime).toISOString(),
         }),
@@ -220,9 +239,10 @@ export default function LetterForm() {
       const data = await response.json();
 
       if (response.ok) {
+        const scheduleDate = new Date(scheduledTime).toLocaleString('zh-CN');
         setMessage({
           type: 'success',
-          text: `信件已成功封存！系统将在 ${new Date(scheduledTime).toLocaleString('zh-CN')} 将信件发送至您的邮箱，请留意查收。`,
+          text: `信件已成功封存！\n\n将于 ${scheduleDate} 发送至 ${email}\n\n💡 建议您截图保存此提示和邮箱信息，便于日后查询。`,
         });
         
         // 清空表单
@@ -240,9 +260,23 @@ export default function LetterForm() {
         });
       }
     } catch (error) {
+      console.error('提交信件失败:', error);
+      let errorMessage = '网络错误，请检查网络连接后重试';
+      
+      if (error instanceof Error) {
+        // 区分不同类型的错误
+        if (error.message.includes('加密') || error.message.includes('密钥')) {
+          errorMessage = `加密失败: ${error.message}`;
+        } else if (error.message.includes('fetch')) {
+          errorMessage = '无法连接到服务器，请确保服务已启动';
+        } else {
+          errorMessage = `操作失败: ${error.message}`;
+        }
+      }
+      
       setMessage({
         type: 'error',
-        text: '网络错误，请检查网络连接后重试',
+        text: errorMessage,
       });
     } finally {
       setIsSubmitting(false);
@@ -321,19 +355,63 @@ export default function LetterForm() {
 
         {/* 加密密钥 */}
         <div>
-          <label htmlFor="passphrase" className="block text-lg font-semibold text-gray-700 mb-2">
-            加密密钥（仅自己保存）
-          </label>
-          <input
-            id="passphrase"
-            type="password"
-            value={passphrase}
-            onChange={(e) => setPassphrase(e.target.value)}
-            required
-            className="w-full px-3 sm:px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-gray-800"
-            placeholder="请输入并妥善保存，平台不存密钥"
-          />
-          <p className="mt-2 text-sm text-gray-500">密钥不会上传或保存，请务必记住，否则无法解密信件。</p>
+          <div className="flex items-center justify-between mb-4">
+            <label className="text-lg font-semibold text-gray-700">信件加密</label>
+            <div className="flex items-center gap-2">
+              <input
+                id="useEncryption"
+                type="checkbox"
+                checked={useEncryption}
+                onChange={(e) => setUseEncryption(e.target.checked)}
+                className="w-5 h-5 rounded border-gray-300 text-purple-500 focus:ring-2 focus:ring-purple-500 cursor-pointer"
+              />
+              <label htmlFor="useEncryption" className="text-sm text-gray-600 cursor-pointer">
+                {useEncryption ? '使用加密' : '不加密'}
+              </label>
+            </div>
+          </div>
+
+          {useEncryption && (
+            <div className="space-y-2">
+              <div className="relative">
+                <input
+                  id="passphrase"
+                  type={showPassphrase ? 'text' : 'password'}
+                  value={passphrase}
+                  onChange={(e) => setPassphrase(e.target.value)}
+                  required={useEncryption}
+                  className="w-full px-4 py-3 pr-12 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-gray-800"
+                  placeholder="请输入并妥善保存，平台不存密钥（也许工号是一个好的选择 ？？？）"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassphrase(!showPassphrase)}
+                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 transition"
+                  title={showPassphrase ? '隐藏密钥' : '显示密钥'}
+                >
+                  {showPassphrase ? (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-4.803m5.596-3.856a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              <p className="text-sm text-gray-500">密钥不会上传或保存，请务必记住，否则无法解密信件。</p>
+            </div>
+          )}
+
+          {!useEncryption && (
+            <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <p className="text-sm text-yellow-800">
+                ⚠️ 信件将以明文形式存储。建议使用加密以保护您的隐私。
+              </p>
+            </div>
+          )}
         </div>
 
         {/* 发送时间 */}
@@ -426,7 +504,7 @@ export default function LetterForm() {
         {/* 提示信息 */}
         {message && (
           <div
-            className={`p-4 rounded-lg ${
+            className={`p-4 rounded-lg whitespace-pre-line ${
               message.type === 'success'
                 ? 'bg-green-50 border border-green-200 text-green-800'
                 : 'bg-red-50 border border-red-200 text-red-800'

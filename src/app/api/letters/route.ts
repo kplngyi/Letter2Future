@@ -4,21 +4,33 @@ import { createLetter } from '@/lib/db';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { encrypted, email, scheduledTime } = body;
+    const { encrypted, content, email, scheduledTime } = body;
 
-    if (!encrypted || !email || !scheduledTime) {
+    // 检查必填字段
+    if (!email || !scheduledTime) {
       return NextResponse.json(
         { error: '请填写所有必填字段' },
         { status: 400 }
       );
     }
 
-    const { ciphertext, iv, salt, algorithm, kdf, iterations } = encrypted ?? {};
-    if (!ciphertext || !iv || !salt || !algorithm || !kdf || !iterations) {
+    // 检查是加密还是明文
+    if (!encrypted && !content) {
       return NextResponse.json(
-        { error: '加密数据缺失，请重试' },
+        { error: '信件内容缺失，请重试' },
         { status: 400 }
       );
+    }
+
+    // 验证加密数据（仅在加密时检查）
+    if (encrypted) {
+      const { ciphertext, iv, salt, algorithm, kdf, iterations } = encrypted ?? {};
+      if (!ciphertext || !iv || !salt || !algorithm || !kdf || !iterations) {
+        return NextResponse.json(
+          { error: '加密数据缺失，请重试' },
+          { status: 400 }
+        );
+      }
     }
 
     // 验证邮箱格式
@@ -40,10 +52,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const storedContent = JSON.stringify({ version: 1, encrypted });
-    if (storedContent.length > 12000) {
+    const storedContent = encrypted 
+      ? JSON.stringify({ version: 1, encrypted })
+      : JSON.stringify({ version: 1, plaintext: content });
+      
+    if (storedContent.length > 120000) {
       return NextResponse.json(
-        { error: '加密后内容过长，请缩短信件内容' },
+        { error: '内容过长，请缩短信件内容' },
         { status: 400 }
       );
     }
@@ -53,7 +68,7 @@ export async function POST(request: Request) {
       recipient_email: email,
       scheduled_time: scheduled.toISOString(),
       status: 'pending',
-      is_encrypted: true,
+      is_encrypted: encrypted ? true : false,
     });
 
     return NextResponse.json({
