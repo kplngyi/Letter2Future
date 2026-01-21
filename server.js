@@ -1,6 +1,5 @@
-const { createServer } = require('https');
-const { parse } = require('url');       // ✅ 确保这一行存在
-const fs = require('fs');
+const { createServer } = require('http');
+const { parse } = require('url');
 const os = require('os');
 const next = require('next');
 
@@ -20,20 +19,14 @@ function getLocalIP() {
 }
 
 app.prepare().then(() => {
-  const server = createServer(
-    {
-      key: fs.readFileSync('./certs/server.key'),
-      cert: fs.readFileSync('./certs/server.crt')
-    },
-    (req, res) => {
-      const parsedUrl = parse(req.url, true);  // ✅ parse 正确使用
-      handle(req, res, parsedUrl);
-    }
-  );
+  const server = createServer((req, res) => {
+    const parsedUrl = parse(req.url, true);
+    handle(req, res, parsedUrl);
+  });
 
   const port = 3000;
   server.listen(port, () => {
     const ip = getLocalIP();
-    console.log(`HTTPS Server running at https://${ip}:${port}`);
+    console.log(`HTTP Server running at http://${ip}:${port}`);
   });
 });
